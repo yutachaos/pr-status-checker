@@ -39,12 +39,13 @@ jobs:
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
+        env:
+          GOPATH: /home/runner/go
         with:
           version: v1.56.2
           args: --timeout=5m
           install-mode: binary
-          only-new-issues: false
-          working-directory: .
+          github-token: ${{ github.token }}
 
   build:
     name: Build
