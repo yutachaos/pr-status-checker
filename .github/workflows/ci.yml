@@ -40,10 +40,10 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          version: v1.56.2
+          only-new-issues: true
+          install-mode: binary
           args: --timeout=5m
-          skip-cache: true
-          skip-save-cache: true
 
   build:
     name: Build
