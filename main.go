@@ -7,8 +7,10 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/go-github/v71/github"
 	"golang.org/x/oauth2"
@@ -18,9 +20,12 @@ import (
 var execCommand = exec.Command
 
 type config struct {
-	token string
-	owner string
-	repo  string
+	token       string
+	owner       string
+	repo        string
+	approve     bool
+	skipPattern string // Regular expression pattern to skip PRs
+	autoRebase  bool   // Whether to automatically rebase PRs that are behind
 }
 
 type PRProcessor struct {
@@ -63,12 +68,18 @@ func getRepositoryInfo() (owner string, repo string, err error) {
 }
 
 func loadConfigWithFlags(flags *flag.FlagSet, args []string) (*config, error) {
-	cfg := &config{}
+	cfg := &config{
+		approve:    true,  // Default to true
+		autoRebase: false, // Default to false
+	}
 
 	// Define command line flags
 	flags.StringVar(&cfg.token, "token", "", "GitHub personal access token")
 	flags.StringVar(&cfg.owner, "owner", "", "Repository owner")
 	flags.StringVar(&cfg.repo, "repo", "", "Repository name")
+	flags.BoolVar(&cfg.approve, "approve", true, "Automatically approve PR when status checks pass")
+	flags.StringVar(&cfg.skipPattern, "skip-pattern", "", "Skip PRs whose titles match this regular expression pattern")
+	flags.BoolVar(&cfg.autoRebase, "auto-rebase", false, "Automatically rebase PRs that are behind the base branch")
 
 	if err := flags.Parse(args); err != nil {
 		return nil, fmt.Errorf("failed to parse flags: %v", err)
@@ -84,10 +95,20 @@ func loadConfigWithFlags(flags *flag.FlagSet, args []string) (*config, error) {
 	if cfg.repo == "" {
 		cfg.repo = os.Getenv("GITHUB_REPO")
 	}
+	if cfg.skipPattern == "" {
+		cfg.skipPattern = os.Getenv("GITHUB_PR_SKIP_PATTERN")
+	}
 
 	// Token is required
 	if cfg.token == "" {
 		return nil, fmt.Errorf("GitHub token is required. Set it via -token flag or GITHUB_TOKEN environment variable")
+	}
+
+	// Validate skip pattern if provided
+	if cfg.skipPattern != "" {
+		if _, err := regexp.Compile(cfg.skipPattern); err != nil {
+			return nil, fmt.Errorf("invalid skip pattern: %v", err)
+		}
 	}
 
 	// Get repository info from git config if owner/repo not specified
@@ -155,46 +176,182 @@ func (p *PRProcessor) ProcessPullRequests() error {
 	return nil
 }
 
+func (p *PRProcessor) shouldSkipPR(pr *github.PullRequest) (bool, error) {
+	if p.cfg.skipPattern == "" {
+		return false, nil
+	}
+	matched, err := regexp.MatchString(p.cfg.skipPattern, pr.GetTitle())
+	if err != nil {
+		return false, fmt.Errorf("error matching skip pattern: %v", err)
+	}
+	if matched {
+		fmt.Printf("PR #%d: Skipping due to title matching skip pattern: %s\n", pr.GetNumber(), p.cfg.skipPattern)
+		return true, nil
+	}
+	return false, nil
+}
+
+func (p *PRProcessor) checkStatusChecks(pr *github.PullRequest) ([]string, []string, error) {
+	combinedStatus, _, err := p.client.Repositories.GetCombinedStatus(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetHead().GetSHA(), nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error getting status: %v", err)
+	}
+
+	var failedStatuses []string
+	var pendingStatuses []string
+
+	for _, status := range combinedStatus.Statuses {
+		switch status.GetState() {
+		case "failure", "error":
+			failedStatuses = append(failedStatuses, status.GetContext())
+		case "pending":
+			pendingStatuses = append(pendingStatuses, status.GetContext())
+		case "success", "skipped":
+			continue
+		}
+	}
+
+	return failedStatuses, pendingStatuses, nil
+}
+
+func (p *PRProcessor) handleFailedChecks(pr *github.PullRequest, failedStatuses, pendingStatuses []string) error {
+	fmt.Printf("PR #%d: Status checks not passed\n", pr.GetNumber())
+	if len(failedStatuses) > 0 {
+		fmt.Printf("PR #%d: Failed checks: %s\n", pr.GetNumber(), strings.Join(failedStatuses, ", "))
+	}
+	if len(pendingStatuses) > 0 {
+		fmt.Printf("PR #%d: Pending checks: %s\n", pr.GetNumber(), strings.Join(pendingStatuses, ", "))
+	}
+
+	if !p.cfg.autoRebase {
+		if len(failedStatuses) > 0 {
+			fmt.Printf("PR #%d: Status checks failed and auto-rebase is disabled\n", pr.GetNumber())
+		} else {
+			fmt.Printf("PR #%d: Status checks pending and auto-rebase is disabled\n", pr.GetNumber())
+		}
+		return nil
+	}
+
+	return p.tryRebasePR(pr)
+}
+
+func (p *PRProcessor) tryRebasePR(pr *github.PullRequest) error {
+	comparison, _, err := p.client.Repositories.CompareCommits(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetBase().GetSHA(), pr.GetHead().GetSHA(), nil)
+	if err != nil {
+		return fmt.Errorf("error comparing commits: %v", err)
+	}
+
+	if comparison.GetBehindBy() == 0 {
+		fmt.Printf("PR #%d: Branch is up to date with base branch\n", pr.GetNumber())
+		return nil
+	}
+
+	fmt.Printf("PR #%d: Needs rebase, behind by %d commits. Updating branch...\n", pr.GetNumber(), comparison.GetBehindBy())
+	return p.updatePRBranch(pr)
+}
+
+func (p *PRProcessor) updatePRBranch(pr *github.PullRequest) error {
+	result, _, err := p.client.PullRequests.UpdateBranch(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetNumber(), nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "not mergeable") {
+			return fmt.Errorf("PR #%d: cannot be updated automatically, manual rebase required: %v", pr.GetNumber(), err)
+		}
+		return fmt.Errorf("error updating branch: %v", err)
+	}
+
+	if result.GetMessage() != "Updating pull request branch." {
+		return nil
+	}
+
+	fmt.Printf("PR #%d: Update in progress, waiting for completion...\n", pr.GetNumber())
+	return p.waitForUpdateCompletion(pr)
+}
+
+func (p *PRProcessor) waitForUpdateCompletion(pr *github.PullRequest) error {
+	maxRetries := 5
+	for i := 0; i < maxRetries; i++ {
+		time.Sleep(5 * time.Second)
+
+		updatedPR, _, err := p.client.PullRequests.Get(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetNumber())
+		if err != nil {
+			return fmt.Errorf("error getting updated PR status: %v", err)
+		}
+
+		if updatedPR.GetHead().GetSHA() != pr.GetHead().GetSHA() {
+			fmt.Printf("PR #%d: Branch update completed\n", pr.GetNumber())
+			return p.checkUpdatedPRStatus(updatedPR)
+		}
+	}
+
+	return fmt.Errorf("PR #%d: branch update timed out", pr.GetNumber())
+}
+
+func (p *PRProcessor) checkUpdatedPRStatus(pr *github.PullRequest) error {
+	failedStatuses, pendingStatuses, err := p.checkStatusChecks(pr)
+	if err != nil {
+		return err
+	}
+
+	if len(failedStatuses) == 0 && len(pendingStatuses) == 0 {
+		return p.handleSuccessfulPR(pr)
+	}
+
+	fmt.Printf("PR #%d: Status checks still not passed after update\n", pr.GetNumber())
+	return nil
+}
+
 func (p *PRProcessor) processSinglePR(pr *github.PullRequest) error {
 	fmt.Printf("Processing PR #%d: %s\n", pr.GetNumber(), pr.GetTitle())
 
-	// Check PR status
-	combinedStatus, _, err := p.client.Repositories.GetCombinedStatus(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetHead().GetSHA(), nil)
+	shouldSkip, err := p.shouldSkipPR(pr)
 	if err != nil {
-		return fmt.Errorf("error getting status: %v", err)
+		return err
+	}
+	if shouldSkip {
+		return nil
 	}
 
-	if combinedStatus.GetState() != "success" {
-		fmt.Printf("PR #%d: Status checks not passed\n", pr.GetNumber())
+	failedStatuses, pendingStatuses, err := p.checkStatusChecks(pr)
+	if err != nil {
+		return err
+	}
 
-		// Check if sync with base branch is needed
-		var compareErr error
-		comparison, _, compareErr := p.client.Repositories.CompareCommits(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetBase().GetSHA(), pr.GetHead().GetSHA(), nil)
-		if compareErr != nil {
-			return fmt.Errorf("error comparing commits: %v", compareErr)
-		}
+	if len(failedStatuses) > 0 || len(pendingStatuses) > 0 {
+		return p.handleFailedChecks(pr, failedStatuses, pendingStatuses)
+	}
 
-		if comparison.GetBehindBy() > 0 {
-			fmt.Printf("PR #%d: Needs rebase, updating branch...\n", pr.GetNumber())
+	return p.handleSuccessfulPR(pr)
+}
 
-			// Update branch
-			_, _, err = p.client.PullRequests.UpdateBranch(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetNumber(), nil)
-			if err != nil {
-				return fmt.Errorf("error updating branch: %v", err)
-			}
-		}
-	} else {
-		fmt.Printf("PR #%d: All status checks passed, enabling auto-merge...\n", pr.GetNumber())
+func (p *PRProcessor) handleSuccessfulPR(pr *github.PullRequest) error {
+	// Enable auto-merge first using direct REST API call
+	fmt.Printf("PR #%d: All status checks passed, enabling auto-merge...\n", pr.GetNumber())
 
-		// Enable merge
-		_, _, err = p.client.PullRequests.Merge(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetNumber(), "", &github.PullRequestOptions{
-			MergeMethod: "merge",
-		})
+	// Create review
+	review := &github.PullRequestReviewRequest{
+		Event: github.Ptr("APPROVE"),
+		Body:  github.Ptr("All status checks passed. Automatically approving."),
+	}
+
+	// Then approve if configured
+	if p.cfg.approve {
+		fmt.Printf("PR #%d: Approving PR...\n", pr.GetNumber())
+		review, _, err := p.client.PullRequests.CreateReview(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetNumber(), review)
 		if err != nil {
-			return fmt.Errorf("error merging PR: %v", err)
+			return fmt.Errorf("error approving PR: %v", err)
 		}
+		fmt.Printf("PR #%d: Approved with review ID %d\n", pr.GetNumber(), review.GetID())
 	}
 
+	// Try to merge the PR
+	result, _, err := p.client.PullRequests.Merge(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetNumber(), "Auto-merge successful", &github.PullRequestOptions{
+		MergeMethod: "merge",
+	})
+	if err != nil {
+		return fmt.Errorf("error merging PR: %v", err)
+	}
+
+	fmt.Printf("PR #%d: Successfully merged: %v\n", pr.GetNumber(), result.GetMerged())
 	return nil
 }
 
