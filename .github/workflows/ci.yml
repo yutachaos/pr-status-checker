@@ -42,10 +42,7 @@ jobs:
         env:
           GOPATH: /home/runner/go
         with:
-          version: v1.56.2
-          args: --timeout=5m
-          install-mode: binary
-          github-token: ${{ github.token }}
+          version: v2.0
 
   build:
     name: Build
