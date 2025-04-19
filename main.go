@@ -330,7 +330,6 @@ func (p *PRProcessor) handleSuccessfulPR(pr *github.PullRequest) error {
 	// Create review
 	review := &github.PullRequestReviewRequest{
 		Event: github.Ptr("APPROVE"),
-		Body:  github.Ptr("All status checks passed. Automatically approving."),
 	}
 
 	// Then approve if configured

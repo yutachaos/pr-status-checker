@@ -289,7 +289,6 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 					"/repos/test-owner/test-repo/pulls/1/reviews": &github.PullRequestReview{
 						ID:    github.Ptr[int64](123),
 						State: github.Ptr("APPROVED"),
-						Body:  github.Ptr("All status checks passed. Automatically approving."),
 					},
 					"/repos/test-owner/test-repo/pulls/1/merge": &github.PullRequestMergeResult{
 						Merged:  github.Ptr(true),
