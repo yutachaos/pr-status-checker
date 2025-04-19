@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/google/go-github/v71/github"
@@ -53,27 +54,71 @@ func TestLoadConfigWithFlags(t *testing.T) {
 	os.Unsetenv("GITHUB_TOKEN")
 	os.Unsetenv("GITHUB_OWNER")
 	os.Unsetenv("GITHUB_REPO")
+	os.Unsetenv("GITHUB_PR_SKIP_PATTERN")
 
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	args := []string{
-		"-token", "flag-token",
-		"-owner", "flag-owner",
-		"-repo", "flag-repo",
+	testCases := []struct {
+		name     string
+		args     []string
+		expected config
+	}{
+		{
+			name: "with all flags",
+			args: []string{
+				"-token", "flag-token",
+				"-owner", "flag-owner",
+				"-repo", "flag-repo",
+				"-approve=false",
+				"-skip-pattern", "^WIP:",
+			},
+			expected: config{
+				token:       "flag-token",
+				owner:       "flag-owner",
+				repo:        "flag-repo",
+				approve:     false,
+				skipPattern: "^WIP:",
+			},
+		},
+		{
+			name: "default values",
+			args: []string{
+				"-token", "flag-token",
+				"-owner", "flag-owner",
+				"-repo", "flag-repo",
+			},
+			expected: config{
+				token:       "flag-token",
+				owner:       "flag-owner",
+				repo:        "flag-repo",
+				approve:     true,
+				skipPattern: "",
+			},
+		},
 	}
 
-	cfg, err := loadConfigWithFlags(flags, args)
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			flags := flag.NewFlagSet("test", flag.ContinueOnError)
+			cfg, err := loadConfigWithFlags(flags, tc.args)
+			if err != nil {
+				t.Errorf("Expected no error, got %v", err)
+			}
 
-	if cfg.token != "flag-token" {
-		t.Errorf("Expected token to be 'flag-token', got '%s'", cfg.token)
-	}
-	if cfg.owner != "flag-owner" {
-		t.Errorf("Expected owner to be 'flag-owner', got '%s'", cfg.owner)
-	}
-	if cfg.repo != "flag-repo" {
-		t.Errorf("Expected repo to be 'flag-repo', got '%s'", cfg.repo)
+			if cfg.token != tc.expected.token {
+				t.Errorf("Expected token to be '%s', got '%s'", tc.expected.token, cfg.token)
+			}
+			if cfg.owner != tc.expected.owner {
+				t.Errorf("Expected owner to be '%s', got '%s'", tc.expected.owner, cfg.owner)
+			}
+			if cfg.repo != tc.expected.repo {
+				t.Errorf("Expected repo to be '%s', got '%s'", tc.expected.repo, cfg.repo)
+			}
+			if cfg.approve != tc.expected.approve {
+				t.Errorf("Expected approve to be %v, got %v", tc.expected.approve, cfg.approve)
+			}
+			if cfg.skipPattern != tc.expected.skipPattern {
+				t.Errorf("Expected skipPattern to be '%s', got '%s'", tc.expected.skipPattern, cfg.skipPattern)
+			}
+		})
 	}
 }
 
@@ -153,9 +198,17 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	recorder := httptest.NewRecorder()
 	key := req.URL.Path
 
-	// POSTリクエストの場合、パスにメソッドを追加
-	if req.Method == http.MethodPost {
-		key = fmt.Sprintf("%s_%s", req.Method, req.URL.Path)
+	// POSTリクエストの場合、レビューエンドポイントへのリクエストを特別に処理
+	if req.Method == http.MethodPost && strings.HasSuffix(key, "/reviews") {
+		response, ok := m.responses[key]
+		if !ok {
+			response = m.responses[strings.TrimSuffix(key, "/reviews")]
+		}
+		recorder.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(recorder).Encode(response); err != nil {
+			return nil, fmt.Errorf("failed to encode response: %v", err)
+		}
+		return recorder.Result(), nil
 	}
 
 	if response, ok := m.responses[key]; ok {
@@ -171,53 +224,96 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func TestPRProcessor_ProcessPullRequests(t *testing.T) {
-	ctx := context.Background()
-	cfg := &config{
-		token: "test-token",
-		owner: "test-owner",
-		repo:  "test-repo",
-	}
-
-	// モックのレスポンスを設定
-	mockResp := &mockTransport{
-		responses: map[string]interface{}{
-			"/repos/test-owner/test-repo/pulls": []*github.PullRequest{
-				{
-					Number: github.Ptr(1),
-					Title:  github.Ptr("Test PR"),
-					Head: &github.PullRequestBranch{
-						SHA: github.Ptr("test-sha"),
-					},
-					Base: &github.PullRequestBranch{
-						SHA: github.Ptr("base-sha"),
-					},
-				},
-			},
-			"/repos/test-owner/test-repo/commits/test-sha/status": &github.CombinedStatus{
-				State: github.Ptr("success"),
-			},
-			"/repos/test-owner/test-repo/pulls/1/merge": &github.PullRequestMergeResult{
-				Merged:  github.Ptr(true),
-				Message: github.Ptr("Pull Request successfully merged"),
-			},
-			"/repos/test-owner/test-repo/commits/base-sha...test-sha": &github.CommitsComparison{
-				BehindBy: github.Ptr(0),
-			},
+	testCases := []struct {
+		name        string
+		approve     bool
+		skipPattern string
+		prTitle     string
+		shouldSkip  bool
+	}{
+		{
+			name:    "with auto approve",
+			approve: true,
+			prTitle: "Test PR",
+		},
+		{
+			name:    "without auto approve",
+			approve: false,
+			prTitle: "Test PR",
+		},
+		{
+			name:        "skip WIP PR",
+			approve:     true,
+			skipPattern: "^WIP:",
+			prTitle:     "WIP: Test PR",
+			shouldSkip:  true,
+		},
+		{
+			name:        "non-WIP PR",
+			approve:     true,
+			skipPattern: "^WIP:",
+			prTitle:     "Test PR",
+			shouldSkip:  false,
 		},
 	}
 
-	// モックのHTTPクライアントを作成
-	httpClient := &http.Client{Transport: mockResp}
-	client := github.NewClient(httpClient)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			cfg := &config{
+				token:       "test-token",
+				owner:       "test-owner",
+				repo:        "test-repo",
+				approve:     tc.approve,
+				skipPattern: tc.skipPattern,
+			}
 
-	processor := &PRProcessor{
-		client: client,
-		cfg:    cfg,
-		ctx:    ctx,
-	}
+			// Set up mock responses
+			mockResp := &mockTransport{
+				responses: map[string]interface{}{
+					"/repos/test-owner/test-repo/pulls": []*github.PullRequest{
+						{
+							Number: github.Ptr(1),
+							Title:  github.Ptr(tc.prTitle),
+							Head: &github.PullRequestBranch{
+								SHA: github.Ptr("test-sha"),
+							},
+							Base: &github.PullRequestBranch{
+								SHA: github.Ptr("base-sha"),
+							},
+						},
+					},
+					"/repos/test-owner/test-repo/commits/test-sha/status": &github.CombinedStatus{
+						State: github.Ptr("success"),
+					},
+					"/repos/test-owner/test-repo/pulls/1/reviews": &github.PullRequestReview{
+						ID:    github.Ptr[int64](123),
+						State: github.Ptr("APPROVED"),
+					},
+					"/repos/test-owner/test-repo/pulls/1/merge": &github.PullRequestMergeResult{
+						Merged:  github.Ptr(true),
+						Message: github.Ptr("Pull Request successfully merged"),
+					},
+					"/repos/test-owner/test-repo/commits/base-sha...test-sha": &github.CommitsComparison{
+						BehindBy: github.Ptr(0),
+					},
+				},
+			}
 
-	err := processor.ProcessPullRequests()
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
+			// Create mock HTTP client
+			httpClient := &http.Client{Transport: mockResp}
+			client := github.NewClient(httpClient)
+
+			processor := &PRProcessor{
+				client: client,
+				cfg:    cfg,
+				ctx:    ctx,
+			}
+
+			err := processor.ProcessPullRequests()
+			if err != nil {
+				t.Errorf("Expected no error, got %v", err)
+			}
+		})
 	}
 }
