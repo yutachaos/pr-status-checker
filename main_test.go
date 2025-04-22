@@ -229,6 +229,7 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 		approve     bool
 		skipPattern string
 		prTitle     string
+		isDraft     bool
 		shouldSkip  bool
 	}{
 		{
@@ -255,6 +256,13 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 			prTitle:     "Test PR",
 			shouldSkip:  false,
 		},
+		{
+			name:    "draft PR",
+			approve: true,
+			prTitle: "Draft PR",
+			isDraft: true,
+			shouldSkip: true,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -275,6 +283,7 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 						{
 							Number: github.Ptr(1),
 							Title:  github.Ptr(tc.prTitle),
+							Draft:  github.Ptr(tc.isDraft),
 							Head: &github.PullRequestBranch{
 								SHA: github.Ptr("test-sha"),
 							},
