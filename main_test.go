@@ -23,13 +23,25 @@ const (
 
 func TestLoadConfig(t *testing.T) {
 	// Set up test environment variables
-	os.Setenv("GITHUB_TOKEN", testToken)
-	os.Setenv("GITHUB_OWNER", testOwner)
-	os.Setenv("GITHUB_REPO", testRepo)
+	if err := os.Setenv("GITHUB_TOKEN", testToken); err != nil {
+		t.Fatalf("Failed to set GITHUB_TOKEN: %v", err)
+	}
+	if err := os.Setenv("GITHUB_OWNER", testOwner); err != nil {
+		t.Fatalf("Failed to set GITHUB_OWNER: %v", err)
+	}
+	if err := os.Setenv("GITHUB_REPO", testRepo); err != nil {
+		t.Fatalf("Failed to set GITHUB_REPO: %v", err)
+	}
 	defer func() {
-		os.Unsetenv("GITHUB_TOKEN")
-		os.Unsetenv("GITHUB_OWNER")
-		os.Unsetenv("GITHUB_REPO")
+		if err := os.Unsetenv("GITHUB_TOKEN"); err != nil {
+			t.Errorf("Failed to unset GITHUB_TOKEN: %v", err)
+		}
+		if err := os.Unsetenv("GITHUB_OWNER"); err != nil {
+			t.Errorf("Failed to unset GITHUB_OWNER: %v", err)
+		}
+		if err := os.Unsetenv("GITHUB_REPO"); err != nil {
+			t.Errorf("Failed to unset GITHUB_REPO: %v", err)
+		}
 	}()
 
 	flags := flag.NewFlagSet("test", flag.ContinueOnError)
@@ -51,10 +63,11 @@ func TestLoadConfig(t *testing.T) {
 
 func TestLoadConfigWithFlags(t *testing.T) {
 	// Clear environment variables
-	os.Unsetenv("GITHUB_TOKEN")
-	os.Unsetenv("GITHUB_OWNER")
-	os.Unsetenv("GITHUB_REPO")
-	os.Unsetenv("GITHUB_PR_SKIP_PATTERN")
+	for _, env := range []string{"GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_PR_SKIP_PATTERN"} {
+		if err := os.Unsetenv(env); err != nil {
+			t.Fatalf("Failed to unset %s: %v", env, err)
+		}
+	}
 
 	testCases := []struct {
 		name     string
@@ -130,6 +143,7 @@ func TestGetRepositoryInfoFromHTTPS(t *testing.T) {
 	execCommand = func(command string, args ...string) *exec.Cmd {
 		cs := []string{"-test.run=TestGitConfigHelper", "--", command}
 		cs = append(cs, args...)
+		//nolint:gosec // This is a test helper that only runs with specific test flags
 		cmd := exec.Command(os.Args[0], cs...)
 		cmd.Env = []string{
 			"GO_WANT_HELPER_PROCESS=1",
@@ -159,6 +173,7 @@ func TestGetRepositoryInfoFromSSH(t *testing.T) {
 	execCommand = func(command string, args ...string) *exec.Cmd {
 		cs := []string{"-test.run=TestGitConfigHelper", "--", command}
 		cs = append(cs, args...)
+		//nolint:gosec // This is a test helper that only runs with specific test flags
 		cmd := exec.Command(os.Args[0], cs...)
 		cmd.Env = []string{
 			"GO_WANT_HELPER_PROCESS=1",
@@ -257,10 +272,10 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 			shouldSkip:  false,
 		},
 		{
-			name:    "draft PR",
-			approve: true,
-			prTitle: "Draft PR",
-			isDraft: true,
+			name:       "draft PR",
+			approve:    true,
+			prTitle:    "Draft PR",
+			isDraft:    true,
 			shouldSkip: true,
 		},
 	}

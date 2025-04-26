@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   test:
     name: Test
@@ -38,12 +42,11 @@ jobs:
           check-latest: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v7
         with:
           version: latest
           args: --timeout=5m
-          skip-pkg-cache: true
-          skip-build-cache: true
+          skip-cache: true
 
   build:
     name: Build
