@@ -147,10 +147,20 @@ func (p *PRProcessor) ProcessPullRequests() error {
 		return fmt.Errorf("error getting pull requests: %w", err)
 	}
 
-	var wg sync.WaitGroup
-	errChan := make(chan error, len(prs))
-
+	// Filter out draft PRs
+	var nonDraftPRs []*github.PullRequest
 	for _, pr := range prs {
+		if !pr.GetDraft() {
+			nonDraftPRs = append(nonDraftPRs, pr)
+		} else {
+			fmt.Printf("PR #%d: Skipping draft PR: %s\n", pr.GetNumber(), pr.GetTitle())
+		}
+	}
+
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(nonDraftPRs))
+
+	for _, pr := range nonDraftPRs {
 		wg.Add(1)
 		go func(pr *github.PullRequest) {
 			defer wg.Done()
