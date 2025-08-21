@@ -63,7 +63,7 @@ func TestLoadConfig(t *testing.T) {
 
 func TestLoadConfigWithFlags(t *testing.T) {
 	// Clear environment variables
-	for _, env := range []string{"GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_PR_SKIP_PATTERN"} {
+	for _, env := range []string{"GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_PR_SKIP_PATTERN", "GITHUB_PR_AUTHOR_PATTERN"} {
 		if err := os.Unsetenv(env); err != nil {
 			t.Fatalf("Failed to unset %s: %v", env, err)
 		}
@@ -82,13 +82,15 @@ func TestLoadConfigWithFlags(t *testing.T) {
 				"-repo", "flag-repo",
 				"-approve=false",
 				"-skip-pattern", "^WIP:",
+				"-author-pattern", "^dependabot",
 			},
 			expected: config{
-				token:       "flag-token",
-				owner:       "flag-owner",
-				repo:        "flag-repo",
-				approve:     false,
-				skipPattern: "^WIP:",
+				token:         "flag-token",
+				owner:         "flag-owner",
+				repo:          "flag-repo",
+				approve:       false,
+				skipPattern:   "^WIP:",
+				authorPattern: "^dependabot",
 			},
 		},
 		{
@@ -99,11 +101,12 @@ func TestLoadConfigWithFlags(t *testing.T) {
 				"-repo", "flag-repo",
 			},
 			expected: config{
-				token:       "flag-token",
-				owner:       "flag-owner",
-				repo:        "flag-repo",
-				approve:     true,
-				skipPattern: "",
+				token:         "flag-token",
+				owner:         "flag-owner",
+				repo:          "flag-repo",
+				approve:       true,
+				skipPattern:   "",
+				authorPattern: "",
 			},
 		},
 	}
@@ -130,6 +133,9 @@ func TestLoadConfigWithFlags(t *testing.T) {
 			}
 			if cfg.skipPattern != tc.expected.skipPattern {
 				t.Errorf("Expected skipPattern to be '%s', got '%s'", tc.expected.skipPattern, cfg.skipPattern)
+			}
+			if cfg.authorPattern != tc.expected.authorPattern {
+				t.Errorf("Expected authorPattern to be '%s', got '%s'", tc.expected.authorPattern, cfg.authorPattern)
 			}
 		})
 	}
@@ -240,28 +246,33 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 	testCases := []struct {
-		name        string
-		approve     bool
-		skipPattern string
-		prTitle     string
-		isDraft     bool
-		shouldSkip  bool
+		name          string
+		approve       bool
+		skipPattern   string
+		authorPattern string
+		prTitle       string
+		prAuthor      string
+		isDraft       bool
+		shouldSkip    bool
 	}{
 		{
-			name:    "with auto approve",
-			approve: true,
-			prTitle: "Test PR",
+			name:     "with auto approve",
+			approve:  true,
+			prTitle:  "Test PR",
+			prAuthor: "test-user",
 		},
 		{
-			name:    "without auto approve",
-			approve: false,
-			prTitle: "Test PR",
+			name:     "without auto approve",
+			approve:  false,
+			prTitle:  "Test PR",
+			prAuthor: "test-user",
 		},
 		{
 			name:        "skip WIP PR",
 			approve:     true,
 			skipPattern: "^WIP:",
 			prTitle:     "WIP: Test PR",
+			prAuthor:    "test-user",
 			shouldSkip:  true,
 		},
 		{
@@ -269,14 +280,32 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 			approve:     true,
 			skipPattern: "^WIP:",
 			prTitle:     "Test PR",
+			prAuthor:    "test-user",
 			shouldSkip:  false,
 		},
 		{
 			name:       "draft PR",
 			approve:    true,
 			prTitle:    "Draft PR",
+			prAuthor:   "test-user",
 			isDraft:    true,
 			shouldSkip: true,
+		},
+		{
+			name:          "author filter match",
+			approve:       true,
+			authorPattern: "^dependabot",
+			prTitle:       "Bump dependency",
+			prAuthor:      "dependabot[bot]",
+			shouldSkip:    false,
+		},
+		{
+			name:          "author filter no match",
+			approve:       true,
+			authorPattern: "^dependabot",
+			prTitle:       "Test PR",
+			prAuthor:      "test-user",
+			shouldSkip:    true,
 		},
 	}
 
@@ -284,11 +313,12 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			cfg := &config{
-				token:       "test-token",
-				owner:       "test-owner",
-				repo:        "test-repo",
-				approve:     tc.approve,
-				skipPattern: tc.skipPattern,
+				token:         "test-token",
+				owner:         "test-owner",
+				repo:          "test-repo",
+				approve:       tc.approve,
+				skipPattern:   tc.skipPattern,
+				authorPattern: tc.authorPattern,
 			}
 
 			// Set up mock responses
@@ -299,6 +329,9 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 							Number: github.Ptr(1),
 							Title:  github.Ptr(tc.prTitle),
 							Draft:  github.Ptr(tc.isDraft),
+							User: &github.User{
+								Login: github.Ptr(tc.prAuthor),
+							},
 							Head: &github.PullRequestBranch{
 								SHA: github.Ptr("test-sha"),
 							},

@@ -20,12 +20,13 @@ import (
 var execCommand = exec.Command
 
 type config struct {
-	token       string
-	owner       string
-	repo        string
-	approve     bool
-	skipPattern string // Regular expression pattern to skip PRs
-	autoRebase  bool   // Whether to automatically rebase PRs that are behind
+	token         string
+	owner         string
+	repo          string
+	approve       bool
+	skipPattern   string // Regular expression pattern to skip PRs
+	authorPattern string // Regular expression pattern to filter PRs by author
+	autoRebase    bool   // Whether to automatically rebase PRs that are behind
 }
 
 type PRProcessor struct {
@@ -79,6 +80,7 @@ func loadConfigWithFlags(flags *flag.FlagSet, args []string) (*config, error) {
 	flags.StringVar(&cfg.repo, "repo", "", "Repository name")
 	flags.BoolVar(&cfg.approve, "approve", true, "Automatically approve PR when status checks pass")
 	flags.StringVar(&cfg.skipPattern, "skip-pattern", "", "Skip PRs whose titles match this regular expression pattern")
+	flags.StringVar(&cfg.authorPattern, "author-pattern", "", "Only process PRs whose authors match this regular expression pattern")
 	flags.BoolVar(&cfg.autoRebase, "auto-rebase", false, "Automatically rebase PRs that are behind the base branch")
 
 	if err := flags.Parse(args); err != nil {
@@ -98,6 +100,9 @@ func loadConfigWithFlags(flags *flag.FlagSet, args []string) (*config, error) {
 	if cfg.skipPattern == "" {
 		cfg.skipPattern = os.Getenv("GITHUB_PR_SKIP_PATTERN")
 	}
+	if cfg.authorPattern == "" {
+		cfg.authorPattern = os.Getenv("GITHUB_PR_AUTHOR_PATTERN")
+	}
 
 	// Token is required
 	if cfg.token == "" {
@@ -108,6 +113,13 @@ func loadConfigWithFlags(flags *flag.FlagSet, args []string) (*config, error) {
 	if cfg.skipPattern != "" {
 		if _, err := regexp.Compile(cfg.skipPattern); err != nil {
 			return nil, fmt.Errorf("invalid skip pattern: %v", err)
+		}
+	}
+
+	// Validate author pattern if provided
+	if cfg.authorPattern != "" {
+		if _, err := regexp.Compile(cfg.authorPattern); err != nil {
+			return nil, fmt.Errorf("invalid author pattern: %v", err)
 		}
 	}
 
@@ -145,6 +157,14 @@ func (p *PRProcessor) ProcessPullRequests() error {
 	})
 	if err != nil {
 		return fmt.Errorf("error getting pull requests: %w", err)
+	}
+
+	fmt.Printf("Found %d open pull requests\n", len(prs))
+	if p.cfg.authorPattern != "" {
+		fmt.Printf("Author filter enabled: %s\n", p.cfg.authorPattern)
+	}
+	if p.cfg.skipPattern != "" {
+		fmt.Printf("Skip pattern enabled: %s\n", p.cfg.skipPattern)
 	}
 
 	// Filter out draft PRs
@@ -187,17 +207,31 @@ func (p *PRProcessor) ProcessPullRequests() error {
 }
 
 func (p *PRProcessor) shouldSkipPR(pr *github.PullRequest) (bool, error) {
-	if p.cfg.skipPattern == "" {
-		return false, nil
+	// Check skip pattern
+	if p.cfg.skipPattern != "" {
+		matched, err := regexp.MatchString(p.cfg.skipPattern, pr.GetTitle())
+		if err != nil {
+			return false, fmt.Errorf("error matching skip pattern: %v", err)
+		}
+		if matched {
+			fmt.Printf("PR #%d: Skipping due to title matching skip pattern: %s\n", pr.GetNumber(), p.cfg.skipPattern)
+			return true, nil
+		}
 	}
-	matched, err := regexp.MatchString(p.cfg.skipPattern, pr.GetTitle())
-	if err != nil {
-		return false, fmt.Errorf("error matching skip pattern: %v", err)
+
+	// Check author pattern (if specified, only process PRs from matching authors)
+	if p.cfg.authorPattern != "" {
+		author := pr.GetUser().GetLogin()
+		matched, err := regexp.MatchString(p.cfg.authorPattern, author)
+		if err != nil {
+			return false, fmt.Errorf("error matching author pattern: %v", err)
+		}
+		if !matched {
+			fmt.Printf("PR #%d: Skipping due to author '%s' not matching author pattern: %s\n", pr.GetNumber(), author, p.cfg.authorPattern)
+			return true, nil
+		}
 	}
-	if matched {
-		fmt.Printf("PR #%d: Skipping due to title matching skip pattern: %s\n", pr.GetNumber(), p.cfg.skipPattern)
-		return true, nil
-	}
+
 	return false, nil
 }
 
