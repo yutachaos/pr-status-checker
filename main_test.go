@@ -688,6 +688,10 @@ func TestHandleSuccessfulPR_WithFailedCI(t *testing.T) {
 						ID:    github.Ptr[int64](123),
 						State: github.Ptr("APPROVED"),
 					},
+					"/repos/test-owner/test-repo/pulls/1/merge": &github.PullRequestMergeResult{
+						Merged:  github.Ptr(true),
+						Message: github.Ptr("Pull Request successfully merged"),
+					},
 				},
 			}
 
