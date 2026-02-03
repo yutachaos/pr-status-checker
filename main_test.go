@@ -85,12 +85,12 @@ func TestLoadConfigWithFlags(t *testing.T) {
 				"-author-pattern", "^dependabot",
 			},
 			expected: config{
-				token:           "flag-token",
-				owner:           "flag-owner",
-				repo:            "flag-repo",
-				approve:         false,
-				skipPattern:     "^WIP:",
-				authorPattern:   "^dependabot",
+				token:            "flag-token",
+				owner:            "flag-owner",
+				repo:             "flag-repo",
+				approve:          false,
+				skipPattern:      "^WIP:",
+				authorPattern:    "^dependabot",
 				filterByReviewer: true,
 			},
 		},
@@ -102,12 +102,12 @@ func TestLoadConfigWithFlags(t *testing.T) {
 				"-repo", "flag-repo",
 			},
 			expected: config{
-				token:           "flag-token",
-				owner:           "flag-owner",
-				repo:            "flag-repo",
-				approve:         true,
-				skipPattern:     "",
-				authorPattern:   "",
+				token:            "flag-token",
+				owner:            "flag-owner",
+				repo:             "flag-repo",
+				approve:          true,
+				skipPattern:      "",
+				authorPattern:    "",
 				filterByReviewer: true,
 			},
 		},
@@ -120,12 +120,12 @@ func TestLoadConfigWithFlags(t *testing.T) {
 				"-no-filter-reviewer",
 			},
 			expected: config{
-				token:           "flag-token",
-				owner:           "flag-owner",
-				repo:            "flag-repo",
-				approve:         true,
-				skipPattern:     "",
-				authorPattern:   "",
+				token:            "flag-token",
+				owner:            "flag-owner",
+				repo:             "flag-repo",
+				approve:          true,
+				skipPattern:      "",
+				authorPattern:    "",
 				filterByReviewer: false,
 			},
 		},
@@ -359,16 +359,16 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 	testCases := []struct {
-		name            string
-		approve         bool
-		skipPattern     string
-		authorPattern   string
-		filterByReviewer bool
-		prTitle         string
-		prAuthor        string
-		isDraft         bool
+		name               string
+		approve            bool
+		skipPattern        string
+		authorPattern      string
+		filterByReviewer   bool
+		prTitle            string
+		prAuthor           string
+		isDraft            bool
 		requestedReviewers []string
-		shouldSkip      bool
+		shouldSkip         bool
 	}{
 		{
 			name:     "with auto approve",
@@ -423,53 +423,53 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 			shouldSkip:    true,
 		},
 		{
-			name:              "reviewer filter enabled - user is reviewer",
-			approve:           true,
-			filterByReviewer:  true,
-			prTitle:           "Test PR",
-			prAuthor:          "test-user",
+			name:               "reviewer filter enabled - user is reviewer",
+			approve:            true,
+			filterByReviewer:   true,
+			prTitle:            "Test PR",
+			prAuthor:           "test-user",
 			requestedReviewers: []string{"test-reviewer"},
-			shouldSkip:        false,
+			shouldSkip:         false,
 		},
 		{
-			name:              "reviewer filter enabled - user is not reviewer",
-			approve:           true,
-			filterByReviewer:  true,
-			prTitle:           "Test PR",
-			prAuthor:          "test-user",
+			name:               "reviewer filter enabled - user is not reviewer",
+			approve:            true,
+			filterByReviewer:   true,
+			prTitle:            "Test PR",
+			prAuthor:           "test-user",
 			requestedReviewers: []string{"other-reviewer"},
-			shouldSkip:        true,
+			shouldSkip:         true,
 		},
 		{
-			name:              "reviewer filter enabled - no reviewers",
-			approve:           true,
-			filterByReviewer:  true,
-			prTitle:           "Test PR",
-			prAuthor:          "test-user",
+			name:               "reviewer filter enabled - no reviewers",
+			approve:            true,
+			filterByReviewer:   true,
+			prTitle:            "Test PR",
+			prAuthor:           "test-user",
 			requestedReviewers: []string{},
-			shouldSkip:        true,
+			shouldSkip:         true,
 		},
 		{
-			name:              "reviewer filter disabled - process all PRs",
-			approve:           true,
-			filterByReviewer:  false,
-			prTitle:           "Test PR",
-			prAuthor:          "test-user",
+			name:               "reviewer filter disabled - process all PRs",
+			approve:            true,
+			filterByReviewer:   false,
+			prTitle:            "Test PR",
+			prAuthor:           "test-user",
 			requestedReviewers: []string{"other-reviewer"},
-			shouldSkip:        false,
+			shouldSkip:         false,
 		},
 	}
 
-		for _, tc := range testCases {
+	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			cfg := &config{
-				token:           "test-token",
-				owner:           "test-owner",
-				repo:            "test-repo",
-				approve:         tc.approve,
-				skipPattern:     tc.skipPattern,
-				authorPattern:   tc.authorPattern,
+				token:            "test-token",
+				owner:            "test-owner",
+				repo:             "test-repo",
+				approve:          tc.approve,
+				skipPattern:      tc.skipPattern,
+				authorPattern:    tc.authorPattern,
 				filterByReviewer: tc.filterByReviewer,
 			}
 
@@ -489,9 +489,9 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 					},
 					"/repos/test-owner/test-repo/pulls": []*github.PullRequest{
 						{
-							Number:            github.Ptr(1),
-							Title:             github.Ptr(tc.prTitle),
-							Draft:             github.Ptr(tc.isDraft),
+							Number:             github.Ptr(1),
+							Title:              github.Ptr(tc.prTitle),
+							Draft:              github.Ptr(tc.isDraft),
 							RequestedReviewers: reviewers,
 							User: &github.User{
 								Login: github.Ptr(tc.prAuthor),
@@ -552,39 +552,39 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 
 func TestShouldSkipPR_ReviewerFilter(t *testing.T) {
 	testCases := []struct {
-		name              string
-		filterByReviewer  bool
-		currentUser       string
+		name               string
+		filterByReviewer   bool
+		currentUser        string
 		requestedReviewers []string
-		expectedSkip      bool
+		expectedSkip       bool
 	}{
 		{
-			name:              "filter enabled - user is reviewer",
-			filterByReviewer:  true,
-			currentUser:       "test-reviewer",
+			name:               "filter enabled - user is reviewer",
+			filterByReviewer:   true,
+			currentUser:        "test-reviewer",
 			requestedReviewers: []string{"test-reviewer", "other-reviewer"},
-			expectedSkip:      false,
+			expectedSkip:       false,
 		},
 		{
-			name:              "filter enabled - user is not reviewer",
-			filterByReviewer:  true,
-			currentUser:       "test-reviewer",
+			name:               "filter enabled - user is not reviewer",
+			filterByReviewer:   true,
+			currentUser:        "test-reviewer",
 			requestedReviewers: []string{"other-reviewer"},
-			expectedSkip:      true,
+			expectedSkip:       true,
 		},
 		{
-			name:              "filter enabled - no reviewers",
-			filterByReviewer:  true,
-			currentUser:       "test-reviewer",
+			name:               "filter enabled - no reviewers",
+			filterByReviewer:   true,
+			currentUser:        "test-reviewer",
 			requestedReviewers: []string{},
-			expectedSkip:      true,
+			expectedSkip:       true,
 		},
 		{
-			name:              "filter disabled - process all",
-			filterByReviewer:  false,
-			currentUser:       "test-reviewer",
+			name:               "filter disabled - process all",
+			filterByReviewer:   false,
+			currentUser:        "test-reviewer",
 			requestedReviewers: []string{"other-reviewer"},
-			expectedSkip:      false,
+			expectedSkip:       false,
 		},
 	}
 
@@ -604,8 +604,8 @@ func TestShouldSkipPR_ReviewerFilter(t *testing.T) {
 			}
 
 			pr := &github.PullRequest{
-				Number:            github.Ptr(1),
-				Title:             github.Ptr("Test PR"),
+				Number:             github.Ptr(1),
+				Title:              github.Ptr("Test PR"),
 				RequestedReviewers: reviewers,
 			}
 
@@ -713,7 +713,7 @@ func TestHandleSuccessfulPR_WithFailedCI(t *testing.T) {
 				},
 			}
 
-			err := processor.handleSuccessfulPR(pr)
+			err := processor.handleSuccessfulPR(pr, false)
 			if err != nil {
 				t.Errorf("Expected no error, got %v", err)
 			}
