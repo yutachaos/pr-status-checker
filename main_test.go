@@ -985,7 +985,7 @@ func TestProcessSinglePR_WithReviewerFilterAndCI(t *testing.T) {
 			requestedReviewers: []string{"test-reviewer"},
 			ciStatus:           "failure",
 			statusStates:       []string{"failure"},
-			shouldProcess:      true, // Will process but won't approve
+			shouldProcess:      true, // Will process but won't approve (will try rebase)
 		},
 	}
 
@@ -1019,27 +1019,33 @@ func TestProcessSinglePR_WithReviewerFilterAndCI(t *testing.T) {
 			}
 
 			// Set up mock responses
-			mockResp := &mockTransport{
-				responses: map[string]interface{}{
-					"/user": &github.User{
-						Login: github.Ptr(tc.currentUser),
-					},
-					"/repos/test-owner/test-repo/commits/test-sha/status": &github.CombinedStatus{
-						State:    github.Ptr(tc.ciStatus),
-						Statuses: statuses,
-					},
-					"/repos/test-owner/test-repo/pulls/1/reviews": &github.PullRequestReview{
-						ID:    github.Ptr[int64](123),
-						State: github.Ptr("APPROVED"),
-					},
-					"/repos/test-owner/test-repo/pulls/1/merge": &github.PullRequestMergeResult{
-						Merged:  github.Ptr(true),
-						Message: github.Ptr("Pull Request successfully merged"),
-					},
-					"/repos/test-owner/test-repo/commits/base-sha...test-sha": &github.CommitsComparison{
-						BehindBy: github.Ptr(0),
-					},
+			responses := map[string]interface{}{
+				"/repos/test-owner/test-repo/commits/test-sha/status": &github.CombinedStatus{
+					State:    github.Ptr(tc.ciStatus),
+					Statuses: statuses,
 				},
+				"/repos/test-owner/test-repo/pulls/1/reviews": &github.PullRequestReview{
+					ID:    github.Ptr[int64](123),
+					State: github.Ptr("APPROVED"),
+				},
+				"/repos/test-owner/test-repo/pulls/1/merge": &github.PullRequestMergeResult{
+					Merged:  github.Ptr(true),
+					Message: github.Ptr("Pull Request successfully merged"),
+				},
+				"/repos/test-owner/test-repo/commits/base-sha...test-sha": &github.CommitsComparison{
+					BehindBy: github.Ptr(0),
+				},
+			}
+
+			// Add user endpoint if filterByReviewer is enabled
+			if tc.filterByReviewer {
+				responses["/user"] = &github.User{
+					Login: github.Ptr(tc.currentUser),
+				}
+			}
+
+			mockResp := &mockTransport{
+				responses: responses,
 			}
 
 			// Create mock HTTP client
