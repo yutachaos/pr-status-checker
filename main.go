@@ -26,13 +26,15 @@ type config struct {
 	approve       bool
 	skipPattern   string // Regular expression pattern to skip PRs
 	authorPattern string // Regular expression pattern to filter PRs by author
-	autoRebase    bool   // Whether to automatically rebase PRs that are behind
+	autoRebase      bool   // Whether to automatically rebase PRs that are behind
+	filterByReviewer bool  // Whether to filter PRs by reviewer (default: true)
 }
 
 type PRProcessor struct {
-	client *github.Client
-	cfg    *config
-	ctx    context.Context
+	client      *github.Client
+	cfg         *config
+	ctx         context.Context
+	currentUser string // Current authenticated user login
 }
 
 func getGitConfig(key string) (string, error) {
@@ -70,8 +72,9 @@ func getRepositoryInfo() (owner string, repo string, err error) {
 
 func loadConfigWithFlags(flags *flag.FlagSet, args []string) (*config, error) {
 	cfg := &config{
-		approve:    true,  // Default to true
-		autoRebase: false, // Default to false
+		approve:         true,  // Default to true
+		autoRebase:      false, // Default to false
+		filterByReviewer: true, // Default to true
 	}
 
 	// Define command line flags
@@ -82,9 +85,16 @@ func loadConfigWithFlags(flags *flag.FlagSet, args []string) (*config, error) {
 	flags.StringVar(&cfg.skipPattern, "skip-pattern", "", "Skip PRs whose titles match this regular expression pattern")
 	flags.StringVar(&cfg.authorPattern, "author-pattern", "", "Only process PRs whose authors match this regular expression pattern")
 	flags.BoolVar(&cfg.autoRebase, "auto-rebase", false, "Automatically rebase PRs that are behind the base branch")
+	var noFilterReviewer bool
+	flags.BoolVar(&noFilterReviewer, "no-filter-reviewer", false, "Disable filtering by reviewer (process all PRs)")
 
 	if err := flags.Parse(args); err != nil {
 		return nil, fmt.Errorf("failed to parse flags: %v", err)
+	}
+
+	// Apply no-filter-reviewer flag if set
+	if noFilterReviewer {
+		cfg.filterByReviewer = false
 	}
 
 	// Load from environment variables if not specified in command line
@@ -102,6 +112,10 @@ func loadConfigWithFlags(flags *flag.FlagSet, args []string) (*config, error) {
 	}
 	if cfg.authorPattern == "" {
 		cfg.authorPattern = os.Getenv("GITHUB_PR_AUTHOR_PATTERN")
+	}
+	// Check environment variable for filterByReviewer (inverted logic: GITHUB_NO_FILTER_REVIEWER=true means filterByReviewer=false)
+	if noFilterReviewer := os.Getenv("GITHUB_NO_FILTER_REVIEWER"); noFilterReviewer == "true" || noFilterReviewer == "1" {
+		cfg.filterByReviewer = false
 	}
 
 	// Token is required
@@ -136,18 +150,29 @@ func loadConfigWithFlags(flags *flag.FlagSet, args []string) (*config, error) {
 	return cfg, nil
 }
 
-func NewPRProcessor(ctx context.Context, cfg *config) *PRProcessor {
+func NewPRProcessor(ctx context.Context, cfg *config) (*PRProcessor, error) {
 	ts := oauth2.StaticTokenSource(
 		&oauth2.Token{AccessToken: cfg.token},
 	)
 	tc := oauth2.NewClient(ctx, ts)
 	client := github.NewClient(tc)
 
-	return &PRProcessor{
-		client: client,
-		cfg:    cfg,
-		ctx:    ctx,
+	// Get current authenticated user
+	currentUser := ""
+	if cfg.filterByReviewer {
+		user, _, err := client.Users.Get(ctx, "")
+		if err != nil {
+			return nil, fmt.Errorf("failed to get current user: %w", err)
+		}
+		currentUser = user.GetLogin()
 	}
+
+	return &PRProcessor{
+		client:      client,
+		cfg:         cfg,
+		ctx:         ctx,
+		currentUser: currentUser,
+	}, nil
 }
 
 func (p *PRProcessor) ProcessPullRequests() error {
@@ -160,6 +185,9 @@ func (p *PRProcessor) ProcessPullRequests() error {
 	}
 
 	fmt.Printf("Found %d open pull requests\n", len(prs))
+	if p.cfg.filterByReviewer {
+		fmt.Printf("Reviewer filter enabled: only processing PRs where %s is a reviewer\n", p.currentUser)
+	}
 	if p.cfg.authorPattern != "" {
 		fmt.Printf("Author filter enabled: %s\n", p.cfg.authorPattern)
 	}
@@ -207,6 +235,26 @@ func (p *PRProcessor) ProcessPullRequests() error {
 }
 
 func (p *PRProcessor) shouldSkipPR(pr *github.PullRequest) (bool, error) {
+	// Check reviewer filter (if enabled, only process PRs where current user is a reviewer)
+	if p.cfg.filterByReviewer {
+		requestedReviewers := pr.RequestedReviewers
+		if len(requestedReviewers) == 0 {
+			fmt.Printf("PR #%d: Skipping due to no reviewers assigned\n", pr.GetNumber())
+			return true, nil
+		}
+		isReviewer := false
+		for _, reviewer := range requestedReviewers {
+			if reviewer.GetLogin() == p.currentUser {
+				isReviewer = true
+				break
+			}
+		}
+		if !isReviewer {
+			fmt.Printf("PR #%d: Skipping due to %s not being a reviewer\n", pr.GetNumber(), p.currentUser)
+			return true, nil
+		}
+	}
+
 	// Check skip pattern
 	if p.cfg.skipPattern != "" {
 		matched, err := regexp.MatchString(p.cfg.skipPattern, pr.GetTitle())
@@ -406,7 +454,10 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	processor := NewPRProcessor(ctx, cfg)
+	processor, err := NewPRProcessor(ctx, cfg)
+	if err != nil {
+		log.Fatalf("Failed to create PR processor: %v", err)
+	}
 	if err := processor.ProcessPullRequests(); err != nil {
 		log.Fatalf("Failed to process pull requests: %v", err)
 	}
