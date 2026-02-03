@@ -715,7 +715,7 @@ func TestHandleSuccessfulPR_WithFailedCI(t *testing.T) {
 				},
 			}
 
-			err := processor.handleSuccessfulPR(pr, false)
+			err := processor.handleSuccessfulPR(pr)
 			if err != nil {
 				t.Errorf("Expected no error, got %v", err)
 			}

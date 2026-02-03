@@ -339,31 +339,24 @@ func (p *PRProcessor) tryRebasePR(pr *github.PullRequest) error {
 	}
 
 	fmt.Printf("PR #%d: Needs rebase, behind by %d commits. Updating branch...\n", pr.GetNumber(), comparison.GetBehindBy())
-	rebaseExecuted, err := p.updatePRBranch(pr)
-	if err != nil {
-		return err
-	}
-	if rebaseExecuted {
-		return p.waitForUpdateCompletion(pr)
-	}
-	return nil
+	return p.updatePRBranch(pr)
 }
 
-func (p *PRProcessor) updatePRBranch(pr *github.PullRequest) (bool, error) {
+func (p *PRProcessor) updatePRBranch(pr *github.PullRequest) error {
 	result, _, err := p.client.PullRequests.UpdateBranch(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetNumber(), nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "not mergeable") {
-			return false, fmt.Errorf("PR #%d: cannot be updated automatically, manual rebase required: %v", pr.GetNumber(), err)
+			return fmt.Errorf("PR #%d: cannot be updated automatically, manual rebase required: %v", pr.GetNumber(), err)
 		}
-		return false, fmt.Errorf("error updating branch: %v", err)
+		return fmt.Errorf("error updating branch: %v", err)
 	}
 
 	if result.GetMessage() != "Updating pull request branch." {
-		return false, nil
+		return nil
 	}
 
 	fmt.Printf("PR #%d: Update in progress, waiting for completion...\n", pr.GetNumber())
-	return true, nil
+	return p.waitForUpdateCompletion(pr)
 }
 
 func (p *PRProcessor) waitForUpdateCompletion(pr *github.PullRequest) error {
@@ -392,8 +385,7 @@ func (p *PRProcessor) checkUpdatedPRStatus(pr *github.PullRequest) error {
 	}
 
 	if len(failedStatuses) == 0 && len(pendingStatuses) == 0 {
-		// Skip review since rebase was executed
-		return p.handleSuccessfulPR(pr, true)
+		return p.handleSuccessfulPR(pr)
 	}
 
 	fmt.Printf("PR #%d: Status checks still not passed after update\n", pr.GetNumber())
@@ -411,26 +403,6 @@ func (p *PRProcessor) processSinglePR(pr *github.PullRequest) error {
 		return nil
 	}
 
-	// Check if rebase is needed first (if autoRebase is enabled)
-	if p.cfg.autoRebase {
-		comparison, _, err := p.client.Repositories.CompareCommits(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetBase().GetSHA(), pr.GetHead().GetSHA(), nil)
-		if err != nil {
-			return fmt.Errorf("error comparing commits: %v", err)
-		}
-
-		if comparison.GetBehindBy() > 0 {
-			fmt.Printf("PR #%d: Branch is behind by %d commits, rebasing first...\n", pr.GetNumber(), comparison.GetBehindBy())
-			rebaseExecuted, err := p.updatePRBranch(pr)
-			if err != nil {
-				return err
-			}
-			if rebaseExecuted {
-				// Rebase was executed, wait for completion and check status
-				return p.waitForUpdateCompletion(pr)
-			}
-		}
-	}
-
 	failedStatuses, pendingStatuses, err := p.checkStatusChecks(pr)
 	if err != nil {
 		return err
@@ -440,10 +412,10 @@ func (p *PRProcessor) processSinglePR(pr *github.PullRequest) error {
 		return p.handleFailedChecks(pr, failedStatuses, pendingStatuses)
 	}
 
-	return p.handleSuccessfulPR(pr, false)
+	return p.handleSuccessfulPR(pr)
 }
 
-func (p *PRProcessor) handleSuccessfulPR(pr *github.PullRequest, skipReview bool) error {
+func (p *PRProcessor) handleSuccessfulPR(pr *github.PullRequest) error {
 	// Re-check status checks before approving to ensure CI hasn't failed
 	failedStatuses, pendingStatuses, err := p.checkStatusChecks(pr)
 	if err != nil {
@@ -465,24 +437,19 @@ func (p *PRProcessor) handleSuccessfulPR(pr *github.PullRequest, skipReview bool
 	// Enable auto-merge first using direct REST API call
 	fmt.Printf("PR #%d: All status checks passed, enabling auto-merge...\n", pr.GetNumber())
 
-	// Skip review if rebase was executed
-	if skipReview {
-		fmt.Printf("PR #%d: Skipping review since rebase was executed\n", pr.GetNumber())
-	} else {
-		// Create review
-		review := &github.PullRequestReviewRequest{
-			Event: github.Ptr("APPROVE"),
-		}
+	// Create review
+	review := &github.PullRequestReviewRequest{
+		Event: github.Ptr("APPROVE"),
+	}
 
-		// Then approve if configured
-		if p.cfg.approve {
-			fmt.Printf("PR #%d: Approving PR...\n", pr.GetNumber())
-			review, _, err := p.client.PullRequests.CreateReview(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetNumber(), review)
-			if err != nil {
-				return fmt.Errorf("error approving PR: %v", err)
-			}
-			fmt.Printf("PR #%d: Approved with review ID %d\n", pr.GetNumber(), review.GetID())
+	// Then approve if configured
+	if p.cfg.approve {
+		fmt.Printf("PR #%d: Approving PR...\n", pr.GetNumber())
+		review, _, err := p.client.PullRequests.CreateReview(p.ctx, p.cfg.owner, p.cfg.repo, pr.GetNumber(), review)
+		if err != nil {
+			return fmt.Errorf("error approving PR: %v", err)
 		}
+		fmt.Printf("PR #%d: Approved with review ID %d\n", pr.GetNumber(), review.GetID())
 	}
 
 	// Try to merge the PR
