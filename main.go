@@ -416,6 +416,24 @@ func (p *PRProcessor) processSinglePR(pr *github.PullRequest) error {
 }
 
 func (p *PRProcessor) handleSuccessfulPR(pr *github.PullRequest) error {
+	// Re-check status checks before approving to ensure CI hasn't failed
+	failedStatuses, pendingStatuses, err := p.checkStatusChecks(pr)
+	if err != nil {
+		return fmt.Errorf("error checking status before approval: %v", err)
+	}
+
+	// Don't approve if there are any failed checks
+	if len(failedStatuses) > 0 {
+		fmt.Printf("PR #%d: Cannot approve - CI checks failed: %s\n", pr.GetNumber(), strings.Join(failedStatuses, ", "))
+		return nil
+	}
+
+	// Don't approve if there are pending checks
+	if len(pendingStatuses) > 0 {
+		fmt.Printf("PR #%d: Cannot approve - CI checks still pending: %s\n", pr.GetNumber(), strings.Join(pendingStatuses, ", "))
+		return nil
+	}
+
 	// Enable auto-merge first using direct REST API call
 	fmt.Printf("PR #%d: All status checks passed, enabling auto-merge...\n", pr.GetNumber())
 
