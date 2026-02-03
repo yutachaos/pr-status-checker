@@ -85,10 +85,16 @@ func loadConfigWithFlags(flags *flag.FlagSet, args []string) (*config, error) {
 	flags.StringVar(&cfg.skipPattern, "skip-pattern", "", "Skip PRs whose titles match this regular expression pattern")
 	flags.StringVar(&cfg.authorPattern, "author-pattern", "", "Only process PRs whose authors match this regular expression pattern")
 	flags.BoolVar(&cfg.autoRebase, "auto-rebase", false, "Automatically rebase PRs that are behind the base branch")
-	flags.BoolVar(&cfg.filterByReviewer, "no-filter-reviewer", false, "Disable filtering by reviewer (process all PRs)")
+	var noFilterReviewer bool
+	flags.BoolVar(&noFilterReviewer, "no-filter-reviewer", false, "Disable filtering by reviewer (process all PRs)")
 
 	if err := flags.Parse(args); err != nil {
 		return nil, fmt.Errorf("failed to parse flags: %v", err)
+	}
+
+	// Apply no-filter-reviewer flag if set
+	if noFilterReviewer {
+		cfg.filterByReviewer = false
 	}
 
 	// Load from environment variables if not specified in command line

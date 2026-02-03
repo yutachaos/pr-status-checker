@@ -85,12 +85,13 @@ func TestLoadConfigWithFlags(t *testing.T) {
 				"-author-pattern", "^dependabot",
 			},
 			expected: config{
-				token:         "flag-token",
-				owner:         "flag-owner",
-				repo:          "flag-repo",
-				approve:       false,
-				skipPattern:   "^WIP:",
-				authorPattern: "^dependabot",
+				token:           "flag-token",
+				owner:           "flag-owner",
+				repo:            "flag-repo",
+				approve:         false,
+				skipPattern:     "^WIP:",
+				authorPattern:   "^dependabot",
+				filterByReviewer: true,
 			},
 		},
 		{
@@ -101,12 +102,31 @@ func TestLoadConfigWithFlags(t *testing.T) {
 				"-repo", "flag-repo",
 			},
 			expected: config{
-				token:         "flag-token",
-				owner:         "flag-owner",
-				repo:          "flag-repo",
-				approve:       true,
-				skipPattern:   "",
-				authorPattern: "",
+				token:           "flag-token",
+				owner:           "flag-owner",
+				repo:            "flag-repo",
+				approve:         true,
+				skipPattern:     "",
+				authorPattern:   "",
+				filterByReviewer: true,
+			},
+		},
+		{
+			name: "with no-filter-reviewer flag",
+			args: []string{
+				"-token", "flag-token",
+				"-owner", "flag-owner",
+				"-repo", "flag-repo",
+				"-no-filter-reviewer",
+			},
+			expected: config{
+				token:           "flag-token",
+				owner:           "flag-owner",
+				repo:            "flag-repo",
+				approve:         true,
+				skipPattern:     "",
+				authorPattern:   "",
+				filterByReviewer: false,
 			},
 		},
 	}
@@ -137,6 +157,84 @@ func TestLoadConfigWithFlags(t *testing.T) {
 			if cfg.authorPattern != tc.expected.authorPattern {
 				t.Errorf("Expected authorPattern to be '%s', got '%s'", tc.expected.authorPattern, cfg.authorPattern)
 			}
+			if cfg.filterByReviewer != tc.expected.filterByReviewer {
+				t.Errorf("Expected filterByReviewer to be %v, got %v", tc.expected.filterByReviewer, cfg.filterByReviewer)
+			}
+		})
+	}
+}
+
+func TestLoadConfigWithReviewerFilterEnvVar(t *testing.T) {
+	// Clear environment variables
+	for _, env := range []string{"GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_NO_FILTER_REVIEWER"} {
+		if err := os.Unsetenv(env); err != nil {
+			t.Fatalf("Failed to unset %s: %v", env, err)
+		}
+	}
+	defer func() {
+		if err := os.Unsetenv("GITHUB_NO_FILTER_REVIEWER"); err != nil {
+			t.Errorf("Failed to unset GITHUB_NO_FILTER_REVIEWER: %v", err)
+		}
+	}()
+
+	testCases := []struct {
+		name           string
+		envValue       string
+		expectedFilter bool
+	}{
+		{
+			name:           "GITHUB_NO_FILTER_REVIEWER=true disables filter",
+			envValue:       "true",
+			expectedFilter: false,
+		},
+		{
+			name:           "GITHUB_NO_FILTER_REVIEWER=1 disables filter",
+			envValue:       "1",
+			expectedFilter: false,
+		},
+		{
+			name:           "GITHUB_NO_FILTER_REVIEWER=false keeps default",
+			envValue:       "false",
+			expectedFilter: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Clean up environment variables first
+			_ = os.Unsetenv("GITHUB_NO_FILTER_REVIEWER")
+			_ = os.Unsetenv("GITHUB_TOKEN")
+			_ = os.Unsetenv("GITHUB_OWNER")
+			_ = os.Unsetenv("GITHUB_REPO")
+
+			if err := os.Setenv("GITHUB_NO_FILTER_REVIEWER", tc.envValue); err != nil {
+				t.Fatalf("Failed to set GITHUB_NO_FILTER_REVIEWER: %v", err)
+			}
+			if err := os.Setenv("GITHUB_TOKEN", "test-token"); err != nil {
+				t.Fatalf("Failed to set GITHUB_TOKEN: %v", err)
+			}
+			if err := os.Setenv("GITHUB_OWNER", "test-owner"); err != nil {
+				t.Fatalf("Failed to set GITHUB_OWNER: %v", err)
+			}
+			if err := os.Setenv("GITHUB_REPO", "test-repo"); err != nil {
+				t.Fatalf("Failed to set GITHUB_REPO: %v", err)
+			}
+
+			flags := flag.NewFlagSet("test", flag.ContinueOnError)
+			cfg, err := loadConfigWithFlags(flags, []string{})
+			if err != nil {
+				t.Errorf("Expected no error, got %v", err)
+			}
+
+			if cfg.filterByReviewer != tc.expectedFilter {
+				t.Errorf("Expected filterByReviewer to be %v, got %v", tc.expectedFilter, cfg.filterByReviewer)
+			}
+
+			// Clean up
+			_ = os.Unsetenv("GITHUB_NO_FILTER_REVIEWER")
+			_ = os.Unsetenv("GITHUB_TOKEN")
+			_ = os.Unsetenv("GITHUB_OWNER")
+			_ = os.Unsetenv("GITHUB_REPO")
 		})
 	}
 }
@@ -219,6 +317,21 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	recorder := httptest.NewRecorder()
 	key := req.URL.Path
 
+	// Handle GET /user endpoint for getting current user
+	if req.Method == http.MethodGet && key == "/user" {
+		response, ok := m.responses[key]
+		if !ok {
+			response = &github.User{
+				Login: github.Ptr("test-reviewer"),
+			}
+		}
+		recorder.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(recorder).Encode(response); err != nil {
+			return nil, fmt.Errorf("failed to encode response: %v", err)
+		}
+		return recorder.Result(), nil
+	}
+
 	// POSTリクエストの場合、レビューエンドポイントへのリクエストを特別に処理
 	if req.Method == http.MethodPost && strings.HasSuffix(key, "/reviews") {
 		response, ok := m.responses[key]
@@ -246,14 +359,16 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 	testCases := []struct {
-		name          string
-		approve       bool
-		skipPattern   string
-		authorPattern string
-		prTitle       string
-		prAuthor      string
-		isDraft       bool
-		shouldSkip    bool
+		name            string
+		approve         bool
+		skipPattern     string
+		authorPattern   string
+		filterByReviewer bool
+		prTitle         string
+		prAuthor        string
+		isDraft         bool
+		requestedReviewers []string
+		shouldSkip      bool
 	}{
 		{
 			name:     "with auto approve",
@@ -307,28 +422,77 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 			prAuthor:      "test-user",
 			shouldSkip:    true,
 		},
+		{
+			name:              "reviewer filter enabled - user is reviewer",
+			approve:           true,
+			filterByReviewer:  true,
+			prTitle:           "Test PR",
+			prAuthor:          "test-user",
+			requestedReviewers: []string{"test-reviewer"},
+			shouldSkip:        false,
+		},
+		{
+			name:              "reviewer filter enabled - user is not reviewer",
+			approve:           true,
+			filterByReviewer:  true,
+			prTitle:           "Test PR",
+			prAuthor:          "test-user",
+			requestedReviewers: []string{"other-reviewer"},
+			shouldSkip:        true,
+		},
+		{
+			name:              "reviewer filter enabled - no reviewers",
+			approve:           true,
+			filterByReviewer:  true,
+			prTitle:           "Test PR",
+			prAuthor:          "test-user",
+			requestedReviewers: []string{},
+			shouldSkip:        true,
+		},
+		{
+			name:              "reviewer filter disabled - process all PRs",
+			approve:           true,
+			filterByReviewer:  false,
+			prTitle:           "Test PR",
+			prAuthor:          "test-user",
+			requestedReviewers: []string{"other-reviewer"},
+			shouldSkip:        false,
+		},
 	}
 
-	for _, tc := range testCases {
+		for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			cfg := &config{
-				token:         "test-token",
-				owner:         "test-owner",
-				repo:          "test-repo",
-				approve:       tc.approve,
-				skipPattern:   tc.skipPattern,
-				authorPattern: tc.authorPattern,
+				token:           "test-token",
+				owner:           "test-owner",
+				repo:            "test-repo",
+				approve:         tc.approve,
+				skipPattern:     tc.skipPattern,
+				authorPattern:   tc.authorPattern,
+				filterByReviewer: tc.filterByReviewer,
+			}
+
+			// Build requested reviewers list
+			var reviewers []*github.User
+			for _, reviewerLogin := range tc.requestedReviewers {
+				reviewers = append(reviewers, &github.User{
+					Login: github.Ptr(reviewerLogin),
+				})
 			}
 
 			// Set up mock responses
 			mockResp := &mockTransport{
 				responses: map[string]interface{}{
+					"/user": &github.User{
+						Login: github.Ptr("test-reviewer"),
+					},
 					"/repos/test-owner/test-repo/pulls": []*github.PullRequest{
 						{
-							Number: github.Ptr(1),
-							Title:  github.Ptr(tc.prTitle),
-							Draft:  github.Ptr(tc.isDraft),
+							Number:            github.Ptr(1),
+							Title:             github.Ptr(tc.prTitle),
+							Draft:             github.Ptr(tc.isDraft),
+							RequestedReviewers: reviewers,
 							User: &github.User{
 								Login: github.Ptr(tc.prAuthor),
 							},
@@ -361,15 +525,104 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 			httpClient := &http.Client{Transport: mockResp}
 			client := github.NewClient(httpClient)
 
+			// Get current user if filterByReviewer is enabled
+			currentUser := ""
+			if cfg.filterByReviewer {
+				user, _, err := client.Users.Get(ctx, "")
+				if err != nil {
+					t.Fatalf("Failed to get current user: %v", err)
+				}
+				currentUser = user.GetLogin()
+			}
+
 			processor := &PRProcessor{
-				client: client,
-				cfg:    cfg,
-				ctx:    ctx,
+				client:      client,
+				cfg:         cfg,
+				ctx:         ctx,
+				currentUser: currentUser,
 			}
 
 			err := processor.ProcessPullRequests()
 			if err != nil {
 				t.Errorf("Expected no error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestShouldSkipPR_ReviewerFilter(t *testing.T) {
+	testCases := []struct {
+		name              string
+		filterByReviewer  bool
+		currentUser       string
+		requestedReviewers []string
+		expectedSkip      bool
+	}{
+		{
+			name:              "filter enabled - user is reviewer",
+			filterByReviewer:  true,
+			currentUser:       "test-reviewer",
+			requestedReviewers: []string{"test-reviewer", "other-reviewer"},
+			expectedSkip:      false,
+		},
+		{
+			name:              "filter enabled - user is not reviewer",
+			filterByReviewer:  true,
+			currentUser:       "test-reviewer",
+			requestedReviewers: []string{"other-reviewer"},
+			expectedSkip:      true,
+		},
+		{
+			name:              "filter enabled - no reviewers",
+			filterByReviewer:  true,
+			currentUser:       "test-reviewer",
+			requestedReviewers: []string{},
+			expectedSkip:      true,
+		},
+		{
+			name:              "filter disabled - process all",
+			filterByReviewer:  false,
+			currentUser:       "test-reviewer",
+			requestedReviewers: []string{"other-reviewer"},
+			expectedSkip:      false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			cfg := &config{
+				filterByReviewer: tc.filterByReviewer,
+			}
+
+			// Build requested reviewers list
+			var reviewers []*github.User
+			for _, reviewerLogin := range tc.requestedReviewers {
+				reviewers = append(reviewers, &github.User{
+					Login: github.Ptr(reviewerLogin),
+				})
+			}
+
+			pr := &github.PullRequest{
+				Number:            github.Ptr(1),
+				Title:             github.Ptr("Test PR"),
+				RequestedReviewers: reviewers,
+			}
+
+			processor := &PRProcessor{
+				client:      nil, // Not needed for this test
+				cfg:         cfg,
+				ctx:         ctx,
+				currentUser: tc.currentUser,
+			}
+
+			shouldSkip, err := processor.shouldSkipPR(pr)
+			if err != nil {
+				t.Errorf("Expected no error, got %v", err)
+			}
+
+			if shouldSkip != tc.expectedSkip {
+				t.Errorf("Expected shouldSkip to be %v, got %v", tc.expectedSkip, shouldSkip)
 			}
 		})
 	}
