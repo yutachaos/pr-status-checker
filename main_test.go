@@ -517,7 +517,7 @@ func TestPRProcessor_ProcessPullRequests(t *testing.T) {
 						Merged:  github.Ptr(true),
 						Message: github.Ptr("Pull Request successfully merged"),
 					},
-					"/repos/test-owner/test-repo/commits/base-sha...test-sha": &github.CommitsComparison{
+					"/repos/test-owner/test-repo/compare/base-sha...test-sha": &github.CommitsComparison{
 						BehindBy: github.Ptr(0),
 					},
 				},
@@ -914,7 +914,7 @@ func TestHandleFailedChecks_AutoRebase(t *testing.T) {
 			// Set up mock responses
 			mockResp := &mockTransport{
 				responses: map[string]interface{}{
-					"/repos/test-owner/test-repo/commits/base-sha...head-sha": &github.CommitsComparison{
+					"/repos/test-owner/test-repo/compare/base-sha...head-sha": &github.CommitsComparison{
 						BehindBy: github.Ptr(tc.behindBy),
 					},
 				},
@@ -1032,7 +1032,7 @@ func TestProcessSinglePR_WithReviewerFilterAndCI(t *testing.T) {
 					Merged:  github.Ptr(true),
 					Message: github.Ptr("Pull Request successfully merged"),
 				},
-				"/repos/test-owner/test-repo/commits/base-sha...test-sha": &github.CommitsComparison{
+				"/repos/test-owner/test-repo/compare/base-sha...test-sha": &github.CommitsComparison{
 					BehindBy: github.Ptr(0),
 				},
 			}
