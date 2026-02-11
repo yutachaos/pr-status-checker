@@ -2,7 +2,7 @@ module github.com/yutachaos/pr-status-checker
 
 go 1.24.0
 
-toolchain go1.24.2
+toolchain go1.26.0
 
 require (
 	github.com/google/go-github/v71 v71.0.0
